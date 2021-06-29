@@ -32,7 +32,6 @@ pub mod multimap;
 pub mod nrs;
 pub mod nrs_multimap;
 pub mod register;
-pub mod wallet;
 pub use consts::DEFAULT_XORURL_BASE;
 pub use helpers::parse_coins_amount;
 pub use safe_network::url::*;
