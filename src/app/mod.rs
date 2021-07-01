@@ -33,7 +33,7 @@ pub mod nrs;
 pub mod nrs_multimap;
 pub mod register;
 pub use consts::DEFAULT_XORURL_BASE;
-pub use helpers::parse_coins_amount;
+pub use helpers::parse_tokens_amount;
 pub use safe_network::url::*;
 pub use xor_name::{XorName, XOR_NAME_LEN};
 
