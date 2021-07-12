@@ -12,14 +12,15 @@ mod nrs_map;
 pub use nrs_map::{DefaultRdf, NrsMap};
 
 use crate::{
+    register::EntryHash,
     app::{
         consts::{CONTENT_ADDED_SIGN, CONTENT_DELETED_SIGN},
         Safe,
     },
-    Error, Result, SafeContentType, SafeUrl, XorUrl,
+    Error, Result, SafeUrl, XorUrl,
 };
 use log::{debug, info, warn};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // Type tag to use for the NrsMapContainer stored on Register
 pub(crate) const NRS_MAP_TYPE_TAG: u64 = 1_500;
@@ -30,7 +31,7 @@ const ERROR_MSG_NO_NRS_MAP_FOUND: &str = "No NRS Map found at this address";
 pub type ProcessedEntries = BTreeMap<String, (String, String)>;
 
 impl Safe {
-    pub fn parse_url(url: &str) -> Result<SafeUrl> {
+    pub fn mm_parse_url(url: &str) -> Result<SafeUrl> {
         let safe_url = SafeUrl::from_url(&sanitised_url(url))?;
         Ok(safe_url)
     }
@@ -39,11 +40,11 @@ impl Safe {
     // It also returns a second SafeUrl if the URL was resolved from an NRS-URL,
     // this second SafeUrl instance contains the information of the parsed NRS-URL.
     // *Note* this is not part of the public API, but an internal helper function used by API impl.
-    pub(crate) async fn parse_and_resolve_url(
+    pub(crate) async fn mm_parse_and_resolve_url(
         &self,
         url: &str,
     ) -> Result<(SafeUrl, Option<SafeUrl>)> {
-        let safe_url = Safe::parse_url(url)?;
+        let safe_url = Safe::mm_parse_url(url)?;
         let orig_path = safe_url.path_decoded()?;
 
         // Obtain the resolution chain without resolving the URL's path
@@ -75,7 +76,7 @@ impl Safe {
         }
     }
 
-    pub async fn nrs_map_container_add(
+    pub async fn mm_nrs_map_container_add(
         &self,
         name: &str,
         link: &str,
@@ -87,7 +88,7 @@ impl Safe {
         // GET current NRS map from name's TLD
         let (safe_url, _) = validate_nrs_name(name)?;
         let xorurl = safe_url.to_string();
-        let (version, mut nrs_map) = self.nrs_map_container_get(&xorurl).await?;
+        let (version, mut nrs_map) = self.mm_nrs_map_container_get(&xorurl).await?;
         debug!("NRS, Existing data: {:?}", nrs_map);
 
         let link = nrs_map.update(name, link, default, hard_link)?;
@@ -96,16 +97,26 @@ impl Safe {
 
         debug!("The new NRS Map: {:?}", nrs_map);
         if !dry_run {
+            let nrs_map_xorurl = self.mm_store_nrs_map(&nrs_map).await?;
+            let old_values: BTreeSet<EntryHash> = self
+                .fetch_multimap_values(&safe_url)
+                .await?
+                .iter()
+                .map(|(hash, _)| hash.to_owned())
+                .collect();
+            let entry = (name.as_bytes().to_owned(), nrs_map_xorurl.as_bytes().to_owned());
+            self.multimap_insert(&xorurl, entry, old_values).await?;
+
+            // TODO rm old impl below kept as a reference
             // Append new version of the NrsMap in the Public Sequence (NRS Map Container)
-            let nrs_map_xorurl = self.store_nrs_map(&nrs_map).await?;
-            self.safe_client
-                .append_to_sequence(
-                    nrs_map_xorurl.as_bytes(),
-                    safe_url.xorname(),
-                    safe_url.type_tag(),
-                    false,
-                )
-                .await?;
+            // self.safe_client
+            //     .append_to_sequence(
+            //         nrs_map_xorurl.as_bytes(),
+            //         safe_url.xorname(),
+            //         safe_url.type_tag(),
+            //         false,
+            //     )
+            //     .await?;
         }
 
         Ok((version + 1, xorurl, processed_entries, nrs_map))
@@ -124,11 +135,11 @@ impl Safe {
     /// #   safe.connect("", Some("fake-credentials")).await.unwrap();
     ///     let rand_string: String = thread_rng().sample_iter(&Alphanumeric).take(15).collect();
     ///     let file_xorurl = safe.files_store_public_blob(&vec![], None, false).await.unwrap();
-    ///     let (xorurl, _processed_entries, nrs_map_container) = safe.nrs_map_container_create(&rand_string, &file_xorurl, true, false, false).await.unwrap();
+    ///     let (xorurl, _processed_entries, nrs_map_container) = safe.mm_nrs_map_container_create(&rand_string, &file_xorurl, true, false, false).await.unwrap();
     ///     assert!(xorurl.contains("safe://"))
     /// # });
     /// ```
-    pub async fn nrs_map_container_create(
+    pub async fn mm_nrs_map_container_create(
         &mut self,
         name: &str,
         link: &str,
@@ -138,7 +149,7 @@ impl Safe {
     ) -> Result<(XorUrl, ProcessedEntries, NrsMap)> {
         info!("Creating an NRS map");
         let (_, nrs_url) = validate_nrs_name(name)?;
-        if self.nrs_map_container_get(&nrs_url).await.is_ok() {
+        if self.mm_nrs_map_container_get(&nrs_url).await.is_ok() {
             Err(Error::ContentError(
                 "NRS name already exists. Please use 'nrs add' command to add sub names to it"
                     .to_string(),
@@ -157,35 +168,48 @@ impl Safe {
                 debug!("XorName for \"{:?}\" is \"{:?}\"", &nrs_url, &nrs_xorname);
 
                 // Store the serialised NrsMap in a Public Blob
-                let nrs_map_xorurl = self.store_nrs_map(&nrs_map).await?;
+                let nrs_map_xorurl = self.mm_store_nrs_map(&nrs_map).await?;
 
-                // Store the NrsMapContainer in a Public Sequence, putting the
-                // serialised NrsMap XOR-URL as the first entry value
-                let xorname = self
-                    .safe_client
-                    .store_sequence(
-                        nrs_map_xorurl.as_bytes(),
-                        Some(nrs_xorname),
-                        NRS_MAP_TYPE_TAG,
-                        None,
-                        false,
-                    )
-                    .await?;
-
-                let xorurl = SafeUrl::encode_sequence_data(
-                    xorname,
+                // Create a new multimap
+                let xorurl = self.multimap_create(
+                    Some(nrs_xorname),
                     NRS_MAP_TYPE_TAG,
-                    SafeContentType::NrsMapContainer,
-                    self.xorurl_base,
-                    false,
-                )?;
+                    false
+                ).await?;
+
+                // Store the NRS map in the multimap
+                let entry = (name.as_bytes().to_owned(), nrs_map_xorurl.as_bytes().to_owned());
+                let _ = self.multimap_insert(&xorurl, entry, BTreeSet::new()
+                ).await?;
+
+                // TODO rm old impl below kept as a reference
+                // // Store the NrsMapContainer in a Public Sequence, putting the
+                // // serialised NrsMap XOR-URL as the first entry value
+                // let xorname = self
+                //     .safe_client
+                //     .store_sequence(
+                //         nrs_map_xorurl.as_bytes(),
+                //         Some(nrs_xorname),
+                //         NRS_MAP_TYPE_TAG,
+                //         None,
+                //         false,
+                //     )
+                //     .await?;
+                //
+                // let xorurl = SafeUrl::encode_sequence_data(
+                //     xorname,
+                //     NRS_MAP_TYPE_TAG,
+                //     SafeContentType::NrsMapContainer,
+                //     self.xorurl_base,
+                //     false,
+                // )?;
 
                 Ok((xorurl, processed_entries, nrs_map))
             }
         }
     }
 
-    pub async fn nrs_map_container_remove(
+    pub async fn mm_nrs_map_container_remove(
         &self,
         name: &str,
         dry_run: bool,
@@ -194,7 +218,7 @@ impl Safe {
         // GET current NRS map from &name TLD
         let (safe_url, _) = validate_nrs_name(name)?;
         let xorurl = safe_url.to_string();
-        let (version, mut nrs_map) = self.nrs_map_container_get(&xorurl).await?;
+        let (version, mut nrs_map) = self.mm_nrs_map_container_get(&xorurl).await?;
         debug!("NRS, Existing data: {:?}", nrs_map);
 
         let removed_link = nrs_map.nrs_map_remove_subname(name)?;
@@ -204,18 +228,26 @@ impl Safe {
             (CONTENT_DELETED_SIGN.to_string(), removed_link),
         );
 
-        debug!("The new NRS Map: {:?}", nrs_map);
+        debug!("Removing from multimap");
         if !dry_run {
-            // Append new version of the NrsMap in the Public Sequence (NRS Map Container)
-            let nrs_map_xorurl = self.store_nrs_map(&nrs_map).await?;
-            self.safe_client
-                .append_to_sequence(
-                    nrs_map_xorurl.as_bytes(),
-                    safe_url.xorname(),
-                    safe_url.type_tag(),
-                    false,
-                )
-                .await?;
+            let old_values: BTreeSet<EntryHash> = self
+                .fetch_multimap_values(&safe_url)
+                .await?
+                .iter()
+                .map(|(hash, _)| hash.to_owned())
+                .collect();
+            self.multimap_remove(&xorurl, old_values).await?;
+
+            // TODO rm old impl below kept as a reference
+            // let nrs_map_xorurl = self.mm_store_nrs_map(&nrs_map).await?;
+            // self.safe_client
+            //     .append_to_sequence(
+            //         nrs_map_xorurl.as_bytes(),
+            //         safe_url.xorname(),
+            //         safe_url.type_tag(),
+            //         false,
+            //     )
+            //     .await?;
         }
 
         Ok((version + 1, xorurl, processed_entries, nrs_map))
@@ -234,48 +266,59 @@ impl Safe {
     /// #   safe.connect("", Some("fake-credentials")).await.unwrap();
     ///     let rand_string: String = thread_rng().sample_iter(&Alphanumeric).take(15).collect();
     ///     let file_xorurl = safe.files_store_public_blob(&vec![], Some("text/plain"), false).await.unwrap();
-    ///     let (xorurl, _processed_entries, _nrs_map) = safe.nrs_map_container_create(&rand_string, &file_xorurl, true, false, false).await.unwrap();
-    ///     let (version, nrs_map_container) = safe.nrs_map_container_get(&xorurl).await.unwrap();
+    ///     let (xorurl, _processed_entries, _nrs_map) = safe.mm_nrs_map_container_create(&rand_string, &file_xorurl, true, false, false).await.unwrap();
+    ///     let (version, nrs_map_container) = safe.mm_nrs_map_container_get(&xorurl).await.unwrap();
     ///     assert_eq!(version, 0);
     ///     assert_eq!(nrs_map_container.get_default_link().unwrap(), file_xorurl);
     /// # });
     /// ```
-    pub async fn nrs_map_container_get(&self, url: &str) -> Result<(u64, NrsMap)> {
+    pub async fn mm_nrs_map_container_get(&self, url: &str) -> Result<(u64, NrsMap)> {
         debug!("Getting latest resolvable map container from: {:?}", url);
-        let safe_url = Safe::parse_url(url)?;
+        let safe_url = Safe::mm_parse_url(url)?;
 
-        // Check if the URL specified a specific version of the content or simply the latest available
-        let data = match safe_url.content_version() {
-            None => {
-                self.safe_client
-                    .sequence_get_last_entry(safe_url.xorname(), NRS_MAP_TYPE_TAG, false)
-                    .await
-            }
-            Some(content_version) => {
-                let serialised_nrs_map = self
-                    .safe_client
-                    .sequence_get_entry(
-                        safe_url.xorname(),
-                        NRS_MAP_TYPE_TAG,
-                        content_version,
-                        false,
-                    )
-                    .await
-                    .map_err(|_| {
-                        Error::VersionNotFound(format!(
-                            "Version '{}' is invalid for NRS Map Container found at \"{}\"",
-                            content_version, url,
-                        ))
-                    })?;
-
-                Ok((content_version, serialised_nrs_map))
-            }
+        // TODO: versions should be managed with EntryHash instead of u64
+        // since this requires to upgrade the safe_url API, we kept is as is for now
+        let placeholder_version:u64 = 0;
+        // TODO: manage multiple resolutions currently only returns the 1st one
+        // fetch multimap latest values
+        let data = match self.fetch_multimap_values(&safe_url).await?.iter().next() {
+            Some((_version_hash, (_name, nrs_map_xorurl_bytes))) => Ok((placeholder_version, nrs_map_xorurl_bytes.to_owned())),
+            None => Err(Error::EmptyContent(format!("Empty Sequence found at XoR name {}", safe_url.xorname()))),
         };
+
+        // TODO rm old impl below kept as a reference
+        // Check if the URL specified a specific version of the content or simply the latest available
+        // let data = match safe_url.content_version() {
+        //     None => {
+        //         self.safe_client
+        //             .sequence_get_last_entry(safe_url.xorname(), NRS_MAP_TYPE_TAG, false)
+        //             .await
+        //     }
+        //     Some(content_version) => {
+        //         let serialised_nrs_map = self
+        //             .safe_client
+        //             .sequence_get_entry(
+        //                 safe_url.xorname(),
+        //                 NRS_MAP_TYPE_TAG,
+        //                 content_version,
+        //                 false,
+        //             )
+        //             .await
+        //             .map_err(|_| {
+        //                 Error::VersionNotFound(format!(
+        //                     "Version '{}' is invalid for NRS Map Container found at \"{}\"",
+        //                     content_version, url,
+        //                 ))
+        //             })?;
+        //
+        //         Ok((content_version, serialised_nrs_map))
+        //     }
+        // };
 
         match data {
             Ok((version, nrs_map_xorurl_bytes)) => {
                 // We first parse the NrsMap XOR-URL from the Sequence
-                let url = String::from_utf8(nrs_map_xorurl_bytes).map_err(|err| {
+                let url = String::from_utf8(nrs_map_xorurl_bytes.to_owned()).map_err(|err| {
                     Error::ContentError(format!(
                         "Couldn't parse the NrsMap link stored in the NrsMapContainer: {:?}",
                         err
@@ -315,7 +358,7 @@ impl Safe {
     }
 
     // Private helper to serialise an NrsMap and store it in a Public Blob
-    async fn store_nrs_map(&self, nrs_map: &NrsMap) -> Result<String> {
+    async fn mm_store_nrs_map(&self, nrs_map: &NrsMap) -> Result<String> {
         // The NrsMapContainer is a Sequence where each NRS Map version is
         // an entry containing the XOR-URL of the Blob that contains the serialised NrsMap.
         // TODO: use RDF format
@@ -342,7 +385,7 @@ fn validate_nrs_name(name: &str) -> Result<(SafeUrl, String)> {
     }
     // parse the name into a url
     let sanitised_url = sanitised_url(name);
-    let safe_url = Safe::parse_url(&sanitised_url)?;
+    let safe_url = Safe::mm_parse_url(&sanitised_url)?;
     if safe_url.content_version().is_some() {
         return Err(Error::InvalidInput(format!(
             "The NRS name/subname URL cannot contain a version: {}",
@@ -375,10 +418,10 @@ mod tests {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
-        let nrs_xorname = Safe::parse_url(&site_name)?.xorname();
+        let nrs_xorname = Safe::mm_parse_url(&site_name)?.xorname();
 
         let (xor_url, _, nrs_map) = safe
-            .nrs_map_container_create(
+            .mm_nrs_map_container_create(
                 &site_name,
                 "safe://linked-from-site_name?v=0",
                 true,
@@ -423,7 +466,7 @@ mod tests {
         let link_v0 = format!("{}?v=0", link);
 
         let (xorurl, _, nrs_map) = safe
-            .nrs_map_container_create(&format!("b.{}", site_name), &link_v0, true, false, false)
+            .mm_nrs_map_container_create(&format!("b.{}", site_name), &link_v0, true, false, false)
             .await?;
         assert_eq!(nrs_map.sub_names_map.len(), 1);
         assert_eq!(nrs_map.get_default_link()?, link_v0);
@@ -432,7 +475,7 @@ mod tests {
         // add subname and set it as the new default too
         let link_v1 = format!("{}?v=1", link);
         let (version, _, _, updated_nrs_map) = safe
-            .nrs_map_container_add(&format!("a.b.{}", site_name), &link_v1, true, false, false)
+            .mm_nrs_map_container_add(&format!("a.b.{}", site_name), &link_v1, true, false, false)
             .await?;
         assert_eq!(version, 1);
         assert_eq!(updated_nrs_map.sub_names_map.len(), 1);
@@ -453,14 +496,14 @@ mod tests {
         let link_v0 = format!("{}?v=0", link);
 
         let (xorurl, _, _) = safe
-            .nrs_map_container_create(&format!("b.{}", site_name), &link_v0, true, false, false)
+            .mm_nrs_map_container_create(&format!("b.{}", site_name), &link_v0, true, false, false)
             .await?;
 
         let _ = retry_loop!(safe.fetch(&xorurl, None));
 
         let versioned_sitename = format!("a.b.{}?v=6", site_name);
         match safe
-            .nrs_map_container_add(
+            .mm_nrs_map_container_add(
                 &versioned_sitename,
                 "safe://linked-from-a_b_site_name?v=0",
                 true,
@@ -485,7 +528,7 @@ mod tests {
         };
 
         match safe
-            .nrs_map_container_remove(&versioned_sitename, false)
+            .mm_nrs_map_container_remove(&versioned_sitename, false)
             .await
         {
             Ok(_) => Err(anyhow!(
@@ -520,21 +563,21 @@ mod tests {
         let link_v0 = format!("{}?v=0", link);
 
         let (xorurl, _, nrs_map) = safe
-            .nrs_map_container_create(&format!("a.b.{}", site_name), &link_v0, true, false, false)
+            .mm_nrs_map_container_create(&format!("a.b.{}", site_name), &link_v0, true, false, false)
             .await?;
         assert_eq!(nrs_map.sub_names_map.len(), 1);
         let _ = retry_loop!(safe.fetch(&xorurl, None));
 
         let link_v1 = format!("{}?v=1", link);
         let _ = safe
-            .nrs_map_container_add(&format!("a2.b.{}", site_name), &link_v1, true, false, false)
+            .mm_nrs_map_container_add(&format!("a2.b.{}", site_name), &link_v1, true, false, false)
             .await?;
 
-        let _ = retry_loop_for_pattern!(safe.nrs_map_container_get(&xorurl), Ok((version, _)) if *version == 1)?;
+        let _ = retry_loop_for_pattern!(safe.mm_nrs_map_container_get(&xorurl), Ok((version, _)) if *version == 1)?;
 
         // remove subname
         let (version, _, _, updated_nrs_map) = safe
-            .nrs_map_container_remove(&format!("a.b.{}", site_name), false)
+            .mm_nrs_map_container_remove(&format!("a.b.{}", site_name), false)
             .await?;
 
         assert_eq!(version, 2);
@@ -556,14 +599,14 @@ mod tests {
         let link_v0 = format!("{}?v=0", link);
 
         let (xorurl, _, nrs_map) = safe
-            .nrs_map_container_create(&format!("a.b.{}", site_name), &link_v0, true, false, false)
+            .mm_nrs_map_container_create(&format!("a.b.{}", site_name), &link_v0, true, false, false)
             .await?;
         assert_eq!(nrs_map.sub_names_map.len(), 1);
         let _ = retry_loop!(safe.fetch(&xorurl, None));
 
         // remove subname
         let (version, _, _, updated_nrs_map) = safe
-            .nrs_map_container_remove(&format!("a.b.{}", site_name), false)
+            .mm_nrs_map_container_remove(&format!("a.b.{}", site_name), false)
             .await?;
         assert_eq!(version, 1);
         assert_eq!(updated_nrs_map.sub_names_map.len(), 0);
@@ -593,7 +636,7 @@ mod tests {
         let link_v0 = format!("{}?v=0", link);
 
         let (xorurl, _, nrs_map) = safe
-            .nrs_map_container_create(
+            .mm_nrs_map_container_create(
                 &format!("a.b.{}", site_name),
                 &link_v0,
                 true,
@@ -606,7 +649,7 @@ mod tests {
 
         // remove subname
         let (version, _, _, updated_nrs_map) = safe
-            .nrs_map_container_remove(&format!("a.b.{}", site_name), false)
+            .mm_nrs_map_container_remove(&format!("a.b.{}", site_name), false)
             .await?;
         assert_eq!(version, 1);
         assert_eq!(updated_nrs_map.sub_names_map.len(), 0);
@@ -617,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn test_nrs_no_scheme() -> Result<()> {
         let site_name = random_nrs_name();
-        let url = Safe::parse_url(&site_name)?;
+        let url = Safe::mm_parse_url(&site_name)?;
         assert_eq!(url.public_name(), site_name);
         Ok(())
     }

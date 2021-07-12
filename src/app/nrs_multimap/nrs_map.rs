@@ -67,9 +67,9 @@ pub type SubNamesMap = BTreeMap<SubName, SubNameRdf>;
 
 // To use for mapping sub names to PublicNames
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
-pub struct NrsMap { // TODO rewrite this with multimap
-    pub sub_names_map: SubNamesMap, // use multimap here
-    pub default: DefaultRdf, // trace more || ask gab
+pub struct NrsMap {
+    pub sub_names_map: SubNamesMap,
+    pub default: DefaultRdf,
 }
 
 impl NrsMap {

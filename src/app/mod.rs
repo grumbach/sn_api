@@ -30,6 +30,7 @@ pub mod fetch;
 pub mod files;
 pub mod multimap;
 pub mod nrs;
+pub mod nrs_multimap;
 pub mod register;
 pub mod wallet;
 pub use consts::DEFAULT_XORURL_BASE;
