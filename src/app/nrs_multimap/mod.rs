@@ -414,21 +414,14 @@ mod tests {
     use anyhow::{anyhow, bail, Result};
 
     #[tokio::test]
-    async fn test_nrs_map_container_create() -> Result<()> {
+    async fn test_mm_nrs_map_container_create() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
         let nrs_xorname = Safe::mm_parse_url(&site_name)?.xorname();
 
-        let (xor_url, _, nrs_map) = safe
-            .mm_nrs_map_container_create(
-                &site_name,
-                "safe://linked-from-site_name?v=0",
-                true,
-                false,
-                false,
-            )
-            .await?;
+        let (xor_url, _, nrs_map) = retry_loop!(safe
+            .mm_nrs_map_container_create(&site_name, "safe://linked-from-site_name?v=0", true, false, false));
 
         assert_eq!(nrs_map.sub_names_map.len(), 0);
         assert_eq!(
@@ -455,7 +448,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_map_container_add() -> Result<()> {
+    async fn test_mm_nrs_map_container_add() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
@@ -465,19 +458,25 @@ mod tests {
             .await?;
         let link_v0 = format!("{}?v=0", link);
 
-        let (xorurl, _, nrs_map) = safe
+        let (xorurl, _, nrs_map) = retry_loop!(safe
             .mm_nrs_map_container_create(&format!("b.{}", site_name), &link_v0, true, false, false)
-            .await?;
+        );
+
+        info!("[TESTS] Created mm nrs container at {}", &xorurl);
+
         assert_eq!(nrs_map.sub_names_map.len(), 1);
         assert_eq!(nrs_map.get_default_link()?, link_v0);
         let _ = retry_loop!(safe.fetch(&xorurl, None));
 
         // add subname and set it as the new default too
         let link_v1 = format!("{}?v=1", link);
-        let (version, _, _, updated_nrs_map) = safe
+        let (version, _, _, updated_nrs_map) = retry_loop!(safe
             .mm_nrs_map_container_add(&format!("a.b.{}", site_name), &link_v1, true, false, false)
-            .await?;
-        assert_eq!(version, 1);
+        );
+
+        info!("[TESTS] added to mm nrs container at {}", &xorurl);
+
+        // assert_eq!(version, 1); // Versions features disabled temporarily (TODO replace with hash)
         assert_eq!(updated_nrs_map.sub_names_map.len(), 1);
         assert_eq!(updated_nrs_map.get_default_link()?, link_v1);
 
@@ -485,7 +484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_map_container_add_or_remove_with_versioned_target() -> Result<()> {
+    async fn test_mm_nrs_map_container_add_or_remove_with_versioned_target() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
@@ -552,7 +551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_map_container_remove_one_of_two() -> Result<()> {
+    async fn test_mm_nrs_map_container_remove_one_of_two() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
@@ -588,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_map_container_remove_default_soft_link() -> Result<()> {
+    async fn test_mm_nrs_map_container_remove_default_soft_link() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
@@ -625,7 +624,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_map_container_remove_default_hard_link() -> Result<()> {
+    async fn test_mm_nrs_map_container_remove_default_hard_link() -> Result<()> {
         let site_name = random_nrs_name();
         let mut safe = new_safe_instance().await?;
 
@@ -658,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_no_scheme() -> Result<()> {
+    async fn test_mm_nrs_no_scheme() -> Result<()> {
         let site_name = random_nrs_name();
         let url = Safe::mm_parse_url(&site_name)?;
         assert_eq!(url.public_name(), site_name);
@@ -666,7 +665,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_validate_name() -> Result<()> {
+    async fn test_mm_nrs_validate_name() -> Result<()> {
         let nrs_name = random_nrs_name();
         let (_, nrs_url) = validate_nrs_name(&nrs_name)?;
         assert_eq!(nrs_url, format!("safe://{}", nrs_name));
@@ -674,7 +673,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nrs_validate_name_with_slash() -> Result<()> {
+    async fn test_mm_nrs_validate_name_with_slash() -> Result<()> {
         let nrs_name = "name/with/slash";
         match validate_nrs_name(&nrs_name) {
             Ok(_) => Err(anyhow!(
