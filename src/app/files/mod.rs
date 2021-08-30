@@ -107,11 +107,11 @@ impl Safe {
             )?;
 
             let entry = NativeUrl::from_xorurl(&files_map_xorurl)?;
-            let _ = &self
+            let entry_hash = &self
                 .write_to_register(&xor_url, entry, Default::default())
                 .await?;
 
-            xor_url
+            format!("{}?v={}", xor_url, VersionHash::from(entry_hash))
         };
 
         Ok((xorurl, processed_files, files_map))
