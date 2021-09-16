@@ -196,8 +196,6 @@ impl Safe {
     }
 
     // Retrieves all pieces of data that resulted from resolving the given URL.
-    // An optional 'while_is' argment can be set as a filter to stop reslution process
-    // upon the first non-matching content type.
     pub(crate) async fn retrieve_from_url(
         &self,
         url: &str,

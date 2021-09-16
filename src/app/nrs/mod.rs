@@ -9,23 +9,15 @@
 
 mod nrs_map;
 
-pub use nrs_map::{DefaultRdf, NrsMap};
+pub use nrs_map::NrsMap;
 pub use safe_network::url::{ContentType, VersionHash};
 
-use crate::{
-    app::{
-        consts::{CONTENT_ADDED_SIGN, CONTENT_DELETED_SIGN},
-        Safe,
-    },
-    Error, Result, Url, XorUrl,
-};
+use crate::{app::Safe, Error, Result, Url, XorUrl};
 use log::{debug, info, warn};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Type tag to use for the NrsMapContainer stored on Register
 pub(crate) const NRS_MAP_TYPE_TAG: u64 = 1_500;
-
-const ERROR_MSG_NO_NRS_MAP_FOUND: &str = "No NRS Map found at this address";
 
 // List of public names uploaded with details if they were added, updated or deleted from NrsMaps
 pub type ProcessedEntries = BTreeMap<String, (String, String)>;
@@ -73,24 +65,39 @@ impl Safe {
         }
     }
 
+    /// # Update or add a new subname to an existing container
+    ///
+    /// ## Example
+    ///
+    /// ```rust,no_run
+    /// # use rand::distributions::Alphanumeric;
+    /// # use rand::{thread_rng, Rng};
+    /// # use sn_api::Safe;
+    /// # let mut safe = Safe::default();
+    /// # async_std::task::block_on(async {
+    /// #   safe.connect("", Some("fake-credentials")).await.unwrap();
+    ///     let name: String = thread_rng().sample_iter(&Alphanumeric).take(15).collect();
+    ///     let file_xorurl = safe.files_store_public_blob(&vec![], None, false).await.unwrap();
+    ///     let _ = safe.nrs_map_container_create(&name, &file_xorurl, false).await.unwrap();
+    ///     let name_with_subname = format!("sub.{}", name);
+    ///     let (version, xorurl, nrs_map_container) = nrs_map_container_add(name_with_subname, file_xorurl, false);
+    ///     assert!(xorurl.contains("safe://"))
+    /// # });
+    /// ```
     pub async fn nrs_map_container_add(
         &self,
         name: &str,
         link: &str,
-        default: bool,
-        hard_link: bool,
         dry_run: bool,
-    ) -> Result<(VersionHash, XorUrl, ProcessedEntries, NrsMap)> {
+    ) -> Result<(VersionHash, XorUrl, NrsMap)> {
         info!("Adding to NRS map...");
-        // GET current NRS map from name's TLD
+        // GET current NRS map from name's Top Name
         let (safe_url, _) = validate_nrs_name(name)?;
         let xorurl = safe_url.to_string();
         let (version, mut nrs_map) = self.nrs_map_container_get(&xorurl).await?;
         debug!("NRS, Existing data: {:?}", nrs_map);
 
-        let link = nrs_map.update(name, link, default, hard_link)?;
-        let mut processed_entries = ProcessedEntries::new();
-        processed_entries.insert(name.to_string(), (CONTENT_ADDED_SIGN.to_string(), link));
+        nrs_map.update(name, link)?;
         debug!("The new NRS Map: {:?}", nrs_map);
 
         if dry_run {
@@ -109,7 +116,7 @@ impl Safe {
         let entry_hash = &self.multimap_insert(&xorurl, entry, old_values).await?;
         let new_version: VersionHash = entry_hash.into();
 
-        Ok((new_version, xorurl, processed_entries, nrs_map))
+        Ok((new_version, xorurl, nrs_map))
     }
 
     /// # Create a NrsMapContainer.
@@ -135,10 +142,8 @@ impl Safe {
         &mut self,
         name: &str,
         link: &str,
-        default: bool,
-        hard_link: bool,
         dry_run: bool,
-    ) -> Result<(XorUrl, ProcessedEntries, NrsMap)> {
+    ) -> Result<(XorUrl, NrsMap)> {
         info!("Creating an NRS map");
         let (_, nrs_url) = validate_nrs_name(name)?;
         if self.nrs_map_container_get(&nrs_url).await.is_ok() {
@@ -149,13 +154,11 @@ impl Safe {
         }
 
         let mut nrs_map = NrsMap::default();
-        let link = nrs_map.update(name, link, default, hard_link)?;
-        let mut processed_entries = ProcessedEntries::new();
-        processed_entries.insert(name.to_string(), (CONTENT_ADDED_SIGN.to_string(), link));
+        nrs_map.update(name, link)?;
         debug!("The new NRS Map: {:?}", nrs_map);
 
         if dry_run {
-            return Ok(("".to_string(), processed_entries, nrs_map));
+            return Ok(("".to_string(), nrs_map));
         }
 
         let nrs_xorname = Url::from_nrsurl(&nrs_url)?.xorname();
@@ -183,14 +186,14 @@ impl Safe {
         tmp_url.set_content_type(ContentType::NrsMapContainer)?;
         let new_xor_url = format!("{}", &tmp_url);
 
-        Ok((new_xor_url, processed_entries, nrs_map))
+        Ok((new_xor_url, nrs_map))
     }
 
     pub async fn nrs_map_container_remove(
         &self,
         name: &str,
         dry_run: bool,
-    ) -> Result<(VersionHash, XorUrl, ProcessedEntries, NrsMap)> {
+    ) -> Result<(VersionHash, XorUrl, NrsMap)> {
         info!("Removing from NRS map...");
         // GET current NRS map from &name TLD
         let (safe_url, _) = validate_nrs_name(name)?;
@@ -198,12 +201,7 @@ impl Safe {
         let (version, mut nrs_map) = self.nrs_map_container_get(&xorurl).await?;
         debug!("NRS, Existing data: {:?}", nrs_map);
 
-        let removed_link = nrs_map.nrs_map_remove_subname(name)?;
-        let mut processed_entries = ProcessedEntries::new();
-        processed_entries.insert(
-            name.to_string(),
-            (CONTENT_DELETED_SIGN.to_string(), removed_link),
-        );
+        let _removed_link = nrs_map.nrs_map_remove_subname(name)?;
 
         if dry_run {
             return Err(Error::NotImplementedError(
@@ -215,9 +213,6 @@ impl Safe {
         let mut old_values = BTreeSet::new();
         old_values.insert(version.entry_hash());
 
-        // TODO use remove
-        // self.multimap_remove(&xorurl, old_values).await?;
-        // tmp retro-compatible workaround with insert
         let nrs_map_xorurl = self.store_nrs_map(&nrs_map).await?;
         let entry = (
             name.as_bytes().to_owned(),
@@ -226,7 +221,7 @@ impl Safe {
         let entry_hash = &self.multimap_insert(&xorurl, entry, old_values).await?;
         let new_version: VersionHash = entry_hash.into();
 
-        Ok((new_version, xorurl, processed_entries, nrs_map))
+        Ok((new_version, xorurl, nrs_map))
     }
 
     /// # Fetch an existing NrsMapContainer.
@@ -258,7 +253,7 @@ impl Safe {
             .await
             .map_err(|e| match e {
                 Error::ContentNotFound(_) => {
-                    Error::ContentNotFound(ERROR_MSG_NO_NRS_MAP_FOUND.to_string())
+                    Error::ContentNotFound("No NRS Map found at this address".to_string())
                 }
                 Error::VersionNotFound(msg) => Error::VersionNotFound(msg),
                 err => Error::NetDataError(format!("Failed to get current version: {}", err)),

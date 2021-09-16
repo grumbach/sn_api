@@ -524,7 +524,7 @@ impl Safe {
             safe_url.set_content_version(Some(new_version));
             let new_link_for_nrs = safe_url.to_string();
             let _ = self
-                .nrs_map_container_add(url, &new_link_for_nrs, false, true, false)
+                .nrs_map_container_add(url, &new_link_for_nrs, false)
                 .await?;
         }
 
