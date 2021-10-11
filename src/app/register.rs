@@ -42,7 +42,7 @@ impl Safe {
     /// Read value from a Register on the network
     pub async fn register_read(&self, url: &str) -> Result<BTreeSet<(EntryHash, Entry)>> {
         debug!("Getting Public Register data from: {:?}", url);
-        let (safeurl, _) = self.parse_and_resolve_url(url).await?;
+        let safeurl = self.parse_and_resolve_url(url).await?;
 
         self.fetch_register_entries(&safeurl).await
     }
@@ -50,7 +50,7 @@ impl Safe {
     /// Read value from a Register on the network by its hash
     pub async fn register_read_entry(&self, url: &str, hash: EntryHash) -> Result<Entry> {
         debug!("Getting Public Register data from: {:?}", url);
-        let (safeurl, _) = self.parse_and_resolve_url(url).await?;
+        let safeurl = self.parse_and_resolve_url(url).await?;
 
         self.fetch_register_entry(&safeurl, hash).await
     }
@@ -127,7 +127,7 @@ impl Safe {
         };
         */
 
-        let (safeurl, _) = self.parse_and_resolve_url(url).await?;
+        let safeurl = self.parse_and_resolve_url(url).await?;
         let address = safeurl.register_address()?;
 
         // write the entry to the Register

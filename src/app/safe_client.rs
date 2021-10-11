@@ -7,7 +7,7 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-use super::fetch::Range;
+use super::resolver::Range;
 use crate::{app::SELF_ENCRYPTION_MIN_SIZE, ipc::NodeConfig, Error, Result};
 use bytes::Bytes;
 use hex::encode;
