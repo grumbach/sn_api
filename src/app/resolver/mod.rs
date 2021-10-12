@@ -28,6 +28,8 @@ pub type Range = Option<(Option<u64>, Option<u64>)>;
 // Maximum number of indirections allowed when resolving a safe:// URL following links
 const INDIRECTION_LIMIT: usize = 10;
 
+// TODO FilesContainer is way larger because of FilesMap, maybe we should remove it?
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, Deserialize, Serialize, Clone)]
 pub enum SafeData {
     SafeKey {
@@ -391,26 +393,38 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_files_container() -> Result<()> {
         let mut safe = new_safe_instance().await?;
-        let (xorurl, _, files_map) = safe
+        let (fc_xorurl, _, original_files_map) = safe
             .files_container_create(Some("./testdata/"), None, true, false, false)
             .await?;
 
-        let safe_url = Url::from_url(&xorurl)?;
-        let content = retry_loop!(safe.fetch(&xorurl, None));
-        let (version0, _) = retry_loop!(safe.files_container_get(&xorurl));
+        let safe_url = Url::from_url(&fc_xorurl)?;
+        let content = retry_loop!(safe.fetch(&fc_xorurl, None));
+        let (version0, _) = retry_loop!(safe.files_container_get(&fc_xorurl));
 
-        assert!(
-            content
-                == SafeData::FilesContainer {
-                    xorurl: xorurl.clone(),
-                    xorname: safe_url.xorname(),
-                    type_tag: 1_100,
-                    version: version0,
-                    files_map,
-                    data_type: DataType::Register,
-                    resolved_from: xorurl.clone(),
-                }
-        );
+        match content.clone() {
+            SafeData::FilesContainer{
+                xorurl,
+                xorname,
+                type_tag,
+                version,
+                files_map,
+                metadata,
+                resolves_into,
+                data_type,
+                resolved_from,
+            } => {
+                assert!(metadata.is_some());
+                assert!(resolves_into.is_some());
+                assert_eq!(xorurl, fc_xorurl.clone());
+                assert_eq!(xorname, safe_url.xorname());
+                assert_eq!(type_tag, 1_100);
+                assert_eq!(version, version0);
+                assert_eq!(files_map, original_files_map);
+                assert_eq!(data_type, DataType::Register);
+                assert_eq!(resolved_from, fc_xorurl.clone());
+            },
+            _ => bail!("Invalid SafeData type! Expected SafeData::FileContainer!"),
+        }
 
         let mut safe_url_with_path = safe_url.clone();
         safe_url_with_path.set_path("/subfolder/subexists.md");
@@ -420,7 +434,7 @@ mod tests {
         assert_eq!(safe_url_with_path.content_type(), safe_url.content_type());
 
         // let's also compare it with the result from inspecting the URL
-        let inspected_content = safe.inspect(&xorurl).await?;
+        let inspected_content = safe.inspect(&fc_xorurl).await?;
         assert_eq!(inspected_content.len(), 1);
         assert_eq!(content, inspected_content[0]);
         Ok(())
@@ -441,8 +455,8 @@ mod tests {
 
         let mut safe_url = Url::from_url(&xorurl)?;
         safe_url.set_content_version(Some(version0));
-        let (_nrs_map_xorurl, _, _nrs_map) = safe
-            .nrs_map_container_create(&site_name, &safe_url.to_string(), true, true, false)
+        let _nrs_map_url = safe
+            .nrs_map_container_create(&site_name, &safe_url, false)
             .await?;
 
         let nrs_url = format!("safe://{}", site_name);
@@ -492,9 +506,9 @@ mod tests {
 
         let mut safe_url = Url::from_url(&xorurl)?;
         safe_url.set_content_version(Some(version0));
-        let files_container_url = safe_url.to_string();
-        let _ = safe
-            .nrs_map_container_create(&site_name, &files_container_url, true, true, false)
+        let files_container_url = safe_url;
+        let nrs_resolution_url = safe
+            .nrs_map_container_create(&site_name, &files_container_url, false)
             .await?;
 
         let nrs_url = format!("safe://{}", site_name);
@@ -505,10 +519,12 @@ mod tests {
             SafeData::FilesContainer {
                 xorurl,
                 resolved_from,
+                resolves_into,
                 ..
             } => {
-                assert_eq!(*resolved_from, files_container_url);
-                assert_eq!(*xorurl, files_container_url);
+                assert_eq!(*xorurl, files_container_url.to_string());
+                assert_eq!(*resolved_from, files_container_url.to_string());
+                assert_eq!(*resolves_into, Some(nrs_resolution_url));
 
                 // let's also compare it with the result from inspecting the URL
                 let inspected_content = safe.inspect(&nrs_url).await?;
@@ -606,8 +622,8 @@ mod tests {
 
         let mut safe_url = Url::from_url(&xorurl)?;
         safe_url.set_content_version(Some(version0));
-        let (_nrs_map_xorurl, _, _nrs_map) = safe
-            .nrs_map_container_create(&site_name, &safe_url.to_string(), true, true, false)
+        let _nrs_map_xorurl = safe
+            .nrs_map_container_create(&site_name, &safe_url, false)
             .await?;
 
         let nrs_url = format!("safe://{}/test.md", site_name);
