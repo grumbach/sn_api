@@ -16,7 +16,7 @@ use crate::{app::Safe, register::EntryHash, Error, Result, Url, XorUrl};
 
 use bytes::{Buf, Bytes};
 use log::{debug, info, warn};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 // Type tag to use for the NrsMapContainer stored on Register
 pub(crate) const NRS_MAP_TYPE_TAG: u64 = 1_500;
@@ -166,6 +166,11 @@ impl Safe {
 
         let (nrs_map, _version) = self.fetch_latest_nrs_map(public_name).await?;
         nrs_map.get(public_name)
+    }
+
+    pub async fn nrs_get_subnames_map(&self, public_name: &str) -> Result<BTreeMap<String, Url>> {
+        let (nrs_map, _version) = self.fetch_latest_nrs_map(public_name).await?;
+        Ok(nrs_map.map)
     }
 
     // Private helper function to fetch the latest nrs_map from the network
@@ -320,14 +325,14 @@ mod tests {
         url_v1.set_content_version(Some(VersionHash::default()));
         let associated_name = format!("a.b.{}", site_name);
 
-        let versionned_url = retry_loop!(safe.nrs_map_container_associate(
-            &associated_name,
-            &url_v1,
-            false
-        ));
+        let versionned_url =
+            retry_loop!(safe.nrs_map_container_associate(&associated_name, &url_v1, false));
 
         assert_ne!(versionned_url.content_version(), Some(version0));
-        assert_ne!(versionned_url.content_version(), Some(VersionHash::default()));
+        assert_ne!(
+            versionned_url.content_version(),
+            Some(VersionHash::default())
+        );
 
         // check that the retrieved url matches the expected
         let retrieved_url = retry_loop!(safe.nrs_map_container_get(&associated_name));
@@ -348,11 +353,8 @@ mod tests {
         let mut url_v0 = Url::from_url(&link)?;
         url_v0.set_content_version(Some(version0));
 
-        let nrs_map_url = retry_loop!(safe.nrs_map_container_create(
-            &format!("b.{}", site_name),
-            &url_v0,
-            false
-        ));
+        let nrs_map_url =
+            retry_loop!(safe.nrs_map_container_create(&format!("b.{}", site_name), &url_v0, false));
 
         let _ = retry_loop!(safe.fetch(&nrs_map_url.to_string(), None));
 
@@ -361,11 +363,7 @@ mod tests {
         let mut dummy_url_v0 = Url::from_url("safe://linked-from-a_b_site_name")?;
         dummy_url_v0.set_content_version(Some(version0));
         match safe
-            .nrs_map_container_associate(
-                &versioned_sitename,
-                &dummy_url_v0,
-                false,
-            )
+            .nrs_map_container_associate(&versioned_sitename, &dummy_url_v0, false)
             .await
         {
             Ok(_) => {
@@ -424,24 +422,19 @@ mod tests {
         let subname = "a.b";
         let associated_name = format!("{}.{}", subname, site_name);
 
-        let nrs_map_url = retry_loop!(safe.nrs_map_container_create(
-            &associated_name,
-            &url_v0,
-            false,
-        ));
+        let nrs_map_url =
+            retry_loop!(safe.nrs_map_container_create(&associated_name, &url_v0, false,));
         let _ = retry_loop!(safe.fetch(&nrs_map_url.to_string(), None));
 
         // associate a second name
-        let version1 = VersionHash::from_str("hqt1zg7dwci3ze7dfqp48e3muqt4gkh5wqt1zg7dwci3ze7dfqp4y")?;
+        let version1 =
+            VersionHash::from_str("hqt1zg7dwci3ze7dfqp48e3muqt4gkh5wqt1zg7dwci3ze7dfqp4y")?;
         let mut url_v1 = Url::from_url(&link)?;
         url_v1.set_content_version(Some(version1));
         let associated_name1 = format!("a2.b.{}", site_name);
 
-        let versionned_url = retry_loop!(safe.nrs_map_container_associate(
-            &associated_name1,
-            &url_v1,
-            false
-        ));
+        let versionned_url =
+            retry_loop!(safe.nrs_map_container_associate(&associated_name1, &url_v1, false));
         assert!(versionned_url.content_version().is_some());
 
         // wait for them to be available
@@ -449,8 +442,7 @@ mod tests {
         let _ = retry_loop_for_pattern!(safe.nrs_map_container_get(&associated_name1), Ok(res_url) if res_url == &url_v1)?;
 
         // remove the first one
-        let versionned_url =
-            retry_loop!(safe.nrs_map_container_remove(&associated_name, false));
+        let versionned_url = retry_loop!(safe.nrs_map_container_remove(&associated_name, false));
         assert!(versionned_url.content_version().is_some());
 
         // check one is still present
@@ -508,17 +500,13 @@ mod tests {
         url_v0.set_content_version(Some(version0));
         let associated_name = format!("a.b.{}", site_name);
 
-        let nrs_map_url = retry_loop!(safe.nrs_map_container_create(
-            &associated_name,
-            &url_v0,
-            false,
-        ));
+        let nrs_map_url =
+            retry_loop!(safe.nrs_map_container_create(&associated_name, &url_v0, false,));
 
         let _ = retry_loop!(safe.fetch(&nrs_map_url.to_string(), None));
 
         // remove subname
-        let versionned_url =
-            retry_loop!(safe.nrs_map_container_remove(&associated_name, false));
+        let versionned_url = retry_loop!(safe.nrs_map_container_remove(&associated_name, false));
         assert!(versionned_url.content_version().is_some());
 
         Ok(())
@@ -547,7 +535,10 @@ mod tests {
         // test with invalid top name
         let invalid_top_name = "atffdgasd/d";
         let expected_err = format!("The NRS top name \"{}\" is invalid because it contains url parts, please remove any path, version, subnames, etc...", invalid_top_name);
-        match safe.nrs_map_container_create(invalid_top_name, &url_v0, true).await {
+        match safe
+            .nrs_map_container_create(invalid_top_name, &url_v0, true)
+            .await
+        {
             Ok(_) => bail!("Unexpected NRS success when expected to fail with invalid top name"),
             Err(Error::InvalidInput(e)) => assert_eq!(e, expected_err),
             Err(_) => bail!("Expected an InvalidInput error kind, got smth else"),

@@ -21,15 +21,14 @@ use async_recursion::async_recursion;
 use bytes::Bytes;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type Range = Option<(Option<u64>, Option<u64>)>;
 
 // Maximum number of indirections allowed when resolving a safe:// URL following links
 const INDIRECTION_LIMIT: usize = 10;
 
-// TODO FilesContainer is way larger because of FilesMap, maybe we should remove it?
-#[allow(clippy::large_enum_variant)]
+/// SafeData contains the data types fetchable using the Safe Network resolver
 #[derive(Debug, PartialEq, Deserialize, Serialize, Clone)]
 pub enum SafeData {
     SafeKey {
@@ -62,6 +61,7 @@ pub enum SafeData {
         xorname: XorName,
         type_tag: u64,
         version: VersionHash,
+        subnames_map: Option<BTreeMap<String, Url>>,
         data_type: DataType,
         resolves_into: Option<Url>,
         resolved_from: String,
@@ -345,7 +345,7 @@ impl Safe {
         &self,
         input_url: Url,
         attached_metadata: Option<FileInfo>,
-        retrieve_data: bool,
+        fetch_mode: bool,
         range: Range,
         resolve_path: bool,
     ) -> Result<SafeData> {
@@ -359,17 +359,19 @@ impl Safe {
             ContentType::FilesContainer => {
                 self.resolve_file_container(input_url, resolve_path).await
             }
-            ContentType::NrsMapContainer => self.resolve_nrs_map_container(input_url).await,
-            ContentType::Multimap => self.resolve_multimap(input_url, retrieve_data).await,
+            ContentType::NrsMapContainer => {
+                self.resolve_nrs_map_container(input_url, !fetch_mode).await
+            }
+            ContentType::Multimap => self.resolve_multimap(input_url, fetch_mode).await,
             ContentType::Raw => {
-                self.resolve_raw(input_url, attached_metadata, retrieve_data, range)
+                self.resolve_raw(input_url, attached_metadata, fetch_mode, range)
                     .await
             }
             ContentType::MediaType(media_type_str) => {
                 self.resolve_mediatype(
                     input_url,
                     attached_metadata,
-                    retrieve_data,
+                    fetch_mode,
                     range,
                     media_type_str,
                 )
@@ -402,7 +404,7 @@ mod tests {
         let (version0, _) = retry_loop!(safe.files_container_get(&fc_xorurl));
 
         match content.clone() {
-            SafeData::FilesContainer{
+            SafeData::FilesContainer {
                 xorurl,
                 xorname,
                 type_tag,
@@ -422,7 +424,7 @@ mod tests {
                 assert_eq!(files_map, original_files_map);
                 assert_eq!(data_type, DataType::Register);
                 assert_eq!(resolved_from, fc_xorurl.clone());
-            },
+            }
             _ => bail!("Invalid SafeData type! Expected SafeData::FileContainer!"),
         }
 

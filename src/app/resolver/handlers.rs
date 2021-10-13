@@ -13,7 +13,11 @@ use log::{debug, warn};
 use std::collections::BTreeSet;
 
 impl Safe {
-    pub(crate) async fn resolve_nrs_map_container(&self, input_url: Url) -> Result<SafeData> {
+    pub(crate) async fn resolve_nrs_map_container(
+        &self,
+        input_url: Url,
+        include_subnames_map: bool,
+    ) -> Result<SafeData> {
         // get NRS resolution
         let mut target_url = self
             .nrs_map_container_get(input_url.top_name())
@@ -32,6 +36,13 @@ impl Safe {
         let url_path = input_url.path_decoded()?;
         let target_path = target_url.path_decoded()?;
         target_url.set_path(&format!("{}{}", target_path, url_path));
+
+        // get subnames_map if requested
+        let subnames_map = if include_subnames_map {
+            Some(self.nrs_get_subnames_map(input_url.top_name()).await?)
+        } else {
+            None
+        };
 
         // create safe_data ignoring the input path or subnames
         let version = target_url.content_version().ok_or_else(|| {
@@ -54,6 +65,7 @@ impl Safe {
             xorname: nrs_url.xorname(),
             type_tag: nrs_url.type_tag(),
             version,
+            subnames_map,
             data_type: nrs_url.data_type(),
             resolves_into: Some(target_url),
             resolved_from: nrs_url.to_string(),
