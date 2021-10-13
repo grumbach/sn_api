@@ -182,6 +182,10 @@ pub(crate) fn get_file_link_and_metadata(
     files_map: &FilesMap,
     path: &str,
 ) -> Result<(Option<String>, Option<FileInfo>)> {
+    if path.is_empty() {
+        return Ok((None, None));
+    }
+
     let realpath = files_map.realpath(path)?;
 
     if let Some(file_info) = files_map.get(&realpath) {
